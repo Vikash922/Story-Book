@@ -1,9 +1,7 @@
 {
   "name": "Wikipedia Article Reader",
   "description": "An application to read popular science articles and texts, with a stealth chat functionality disguised as annotations.",
-  "requestFramePermissions": [
-    "accelerometer"
-  ],
+  "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
