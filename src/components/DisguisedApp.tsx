@@ -1,6 +1,6 @@
 import { Share, Link, BookMarked, ChevronLeft, Library as LibraryIcon, WifiOff, Moon, Sun, Smile, ShoppingBag } from 'lucide-react';
 import { useState, useRef, useEffect, FormEvent } from 'react';
-import { useChatRoom } from '../lib/api';
+import { useChatRoom, getApiUrl } from '../lib/api';
 import { useShake, requestShakePermission } from '../lib/useShake';
 import { library, Book } from '../data/books';
 import MeeshoView from './MeeshoView';
@@ -38,9 +38,9 @@ export default function DisguisedApp() {
   // Register beforeunload to instantly trigger leave notification on tab close/unload
   useEffect(() => {
     const handleUnload = () => {
-      if (roomCode && userId && mode === 'chat') {
+      if (roomCode && userId) {
         const payload = JSON.stringify({ sender: userId });
-        fetch(`/api/room/${roomCode}/leave`, {
+        fetch(getApiUrl(`/api/room/${roomCode}/leave`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: payload,
@@ -52,17 +52,8 @@ export default function DisguisedApp() {
     window.addEventListener('beforeunload', handleUnload);
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
-      // Run immediately when mode switches away from 'chat' or component unmounts
-      if (roomCode && userId && mode === 'chat') {
-        fetch(`/api/room/${roomCode}/leave`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sender: userId }),
-          keepalive: true
-        }).catch(() => {});
-      }
     };
-  }, [mode, roomCode, userId]);
+  }, [roomCode, userId]);
 
   // Tick calculation logic mimicking WhatsApp
   const getMessageTickStatus = (msg: any) => {

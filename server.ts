@@ -8,6 +8,17 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Enable CORS for external deployments like Vercel
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // In-memory data store for ephemeral stealth chat
   const rooms = new Map<string, any[]>();
   const typingStates = new Map<string, Record<string, number>>();

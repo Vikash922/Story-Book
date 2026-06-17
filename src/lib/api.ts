@@ -13,6 +13,24 @@ export interface ParticipantState {
   lastRead: number;
 }
 
+export function getApiUrl(path: string): string {
+  const custom = (import.meta as any).env?.VITE_BACKEND_URL;
+  if (custom) {
+    return `${custom.replace(/\/$/, '')}${path}`;
+  }
+  
+  const origin = window.location.origin;
+  // If the app runs on a non-server host (Vercel, different local port), route all API requests to our live Cloud Run endpoint
+  const isVercel = origin.includes('vercel.app');
+  const isDiffLocalhost = origin.includes('localhost:') && !origin.includes(':3000');
+  
+  if (isVercel || isDiffLocalhost) {
+    return `https://ais-pre-wbcgrvqnhnscn372f2kj2r-501921130895.asia-southeast1.run.app${path}`;
+  }
+  
+  return path;
+}
+
 export function useChatRoom(roomCode: string | null, userId?: string, isChatActive: boolean = false) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
@@ -56,7 +74,7 @@ export function useChatRoom(roomCode: string | null, userId?: string, isChatActi
           ? Math.max(...localMsgs.map(m => m.timestamp)) 
           : 0;
 
-        const res = await fetch(`/api/room/${roomCode}?since=${lastTimestamp}&user=${userId || ''}&active=${isChatActive}`);
+        const res = await fetch(getApiUrl(`/api/room/${roomCode}?since=${lastTimestamp}&user=${userId || ''}&active=${isChatActive}`));
         if (res.ok && isActive) {
           const data = await res.json();
           const newMsgs: ChatMessage[] = data.messages || [];
@@ -135,7 +153,7 @@ export function useChatRoom(roomCode: string | null, userId?: string, isChatActi
 
   const sendMessage = async (code: string, text: string, sender: string) => {
     try {
-      const res = await fetch(`/api/room/${code}/message`, {
+      const res = await fetch(getApiUrl(`/api/room/${code}/message`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, sender })
@@ -158,7 +176,7 @@ export function useChatRoom(roomCode: string | null, userId?: string, isChatActi
   const sendTypingStatus = async (isTyping: boolean) => {
     if (!roomCode || !userId) return;
     try {
-      await fetch(`/api/room/${roomCode}/typing`, {
+      await fetch(getApiUrl(`/api/room/${roomCode}/typing`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sender: userId, isTyping })
@@ -170,7 +188,7 @@ export function useChatRoom(roomCode: string | null, userId?: string, isChatActi
 
   const createRoom = async () => {
     try {
-      const res = await fetch('/api/room', { method: 'POST' });
+      const res = await fetch(getApiUrl('/api/room'), { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         return data.code;
