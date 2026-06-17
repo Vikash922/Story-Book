@@ -8,21 +8,10 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Enable CORS for external deployments like Vercel
-  app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(200);
-    }
-    next();
-  });
-
   // In-memory data store for ephemeral stealth chat
   const rooms = new Map<string, any[]>();
   const typingStates = new Map<string, Record<string, number>>();
-  const roomParticipants = new Map<string, Map<string, { lastSeen: number, lastRead: number, joinedSent?: boolean, leftSent?: boolean }>>();
+  const roomParticipants = new Map<string, Map<string, { lastSeen: number, lastRead: number }>>();
 
   app.post('/api/room', (req, res) => {
     // Generate a 6-character room code 
@@ -36,10 +25,7 @@ async function startServer() {
     const since = parseInt(req.query.since as string, 10) || 0;
     const userId = req.query.user as string;
     const isActiveTab = req.query.active === 'true';
-    if (!rooms.has(code)) {
-      rooms.set(code, []);
-    }
-    const allMessages = rooms.get(code)!;
+    const allMessages = rooms.get(code) || [];
     const now = Date.now();
     
     if (!roomParticipants.has(code)) {
@@ -47,26 +33,35 @@ async function startServer() {
     }
     const participants = roomParticipants.get(code)!;
 
-    // Sweep stale participants (inactive for more than 30 seconds)
+    // Sweep stale participants (inactive for more than 15 seconds)
     for (const [pUserId, state] of participants.entries()) {
-      if (pUserId !== userId && state.lastSeen > 0 && now - state.lastSeen > 30000) {
-        state.lastSeen = 0; // mark offline silently, do not push spam system alerts for auto sweeps
+      if (pUserId !== userId && state.lastSeen > 0 && now - state.lastSeen > 15000) {
+        state.lastSeen = 0; // offline
+        
+        // Push a "left" system alert
+        const aliasName = pUserId.substring(2).toUpperCase();
+        allMessages.push({
+          id: `sys_leave_auto_${pUserId}_${now}`,
+          text: `Ref: ${aliasName} has left the study session`,
+          sender: 'system',
+          timestamp: now,
+          isSystem: true
+        });
       }
     }
 
     // Track current user's state
     if (userId) {
-      const existing = participants.get(userId) || { lastSeen: 0, lastRead: 0, joinedSent: false, leftSent: false };
+      const existing = participants.get(userId) || { lastSeen: 0, lastRead: 0 };
+      const isNewJoin = !participants.has(userId) || existing.lastSeen === 0;
 
       existing.lastSeen = now;
       if (isActiveTab) {
         existing.lastRead = now;
       }
+      participants.set(userId, existing);
 
-      if (!existing.joinedSent) {
-        existing.joinedSent = true;
-        existing.leftSent = false;
-
+      if (isNewJoin) {
         const aliasName = userId.substring(2).toUpperCase();
         allMessages.push({
           id: `sys_join_${userId}_${now}`,
@@ -76,8 +71,6 @@ async function startServer() {
           isSystem: true
         });
       }
-
-      participants.set(userId, existing);
     }
 
     // Clean up expired typers (older than 4 seconds)
@@ -113,10 +106,7 @@ async function startServer() {
   app.post('/api/room/:code/leave', (req, res) => {
     const { code } = req.params;
     const { sender } = req.body;
-    if (!rooms.has(code)) {
-      rooms.set(code, []);
-    }
-    const allMessages = rooms.get(code)!;
+    const allMessages = rooms.get(code) || [];
     const now = Date.now();
 
     if (roomParticipants.has(code)) {
@@ -126,19 +116,14 @@ async function startServer() {
         if (state.lastSeen > 0) {
           state.lastSeen = 0; // offline
           
-          if (!state.leftSent) {
-            state.leftSent = true;
-            state.joinedSent = false; // Reset so they can rejoin cleanly on next open
-            
-            const aliasName = sender.substring(2).toUpperCase();
-            allMessages.push({
-              id: `sys_leave_${sender}_${now}`,
-              text: `Ref: ${aliasName} has left the study session`,
-              sender: 'system',
-              timestamp: now,
-              isSystem: true
-            });
-          }
+          const aliasName = sender.substring(2).toUpperCase();
+          allMessages.push({
+            id: `sys_leave_${sender}_${now}`,
+            text: `Ref: ${aliasName} has left the study session`,
+            sender: 'system',
+            timestamp: now,
+            isSystem: true
+          });
         }
       }
     }
