@@ -20,15 +20,16 @@ export function getApiUrl(path: string): string {
   }
   
   const origin = window.location.origin;
-  // If the app runs on a non-server host (Vercel, different local port), route all API requests to our live Cloud Run endpoint
-  const isVercel = origin.includes('vercel.app');
-  const isDiffLocalhost = origin.includes('localhost:') && !origin.includes(':3000');
+  // If we are running on Cloud Run (contains '.run.app') or local port 3000, we route to local relative path.
+  // Otherwise (Vercel, custom domain, other client hosts), we route to the production Cloud Run deployment.
+  const isCloudRun = origin.includes('.run.app');
+  const isLocalDev = origin.includes('localhost:3000') || origin.includes('127.0.0.1:3000');
   
-  if (isVercel || isDiffLocalhost) {
-    return `https://ais-pre-wbcgrvqnhnscn372f2kj2r-501921130895.asia-southeast1.run.app${path}`;
+  if (isCloudRun || isLocalDev) {
+    return path;
   }
   
-  return path;
+  return `https://ais-pre-wbcgrvqnhnscn372f2kj2r-501921130895.asia-southeast1.run.app${path}`;
 }
 
 export function useChatRoom(roomCode: string | null, userId?: string, isChatActive: boolean = false) {
