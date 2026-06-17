@@ -652,13 +652,13 @@ export default function DisguisedApp() {
               {messages.map((msg) => {
                 if (msg.isSystem) {
                   return (
-                    <div key={msg.id} className="flex justify-center w-full my-2">
-                      <span className={`px-4 py-1.5 rounded-full text-[11px] font-sans font-medium tracking-wide shadow-xs border ${
+                    <div key={msg.id} className="flex justify-center w-full my-1.5 select-none pointer-events-none">
+                      <span className={`text-[9.5px] font-mono tracking-wider uppercase opacity-35 px-2 py-0.5 ${
                         isDarkMode 
-                          ? 'bg-[#222222]/80 border-[#333333] text-[#A0A0A0]' 
-                          : 'bg-[#EDE9DB]/50 border-[#D1CEC0] text-[#7A786E]'
+                          ? 'text-[#888888]' 
+                          : 'text-[#7A786E]'
                       }`}>
-                        {msg.text}
+                        ◇ {msg.text} ◇
                       </span>
                     </div>
                   );

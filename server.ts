@@ -25,7 +25,10 @@ async function startServer() {
     const since = parseInt(req.query.since as string, 10) || 0;
     const userId = req.query.user as string;
     const isActiveTab = req.query.active === 'true';
-    const allMessages = rooms.get(code) || [];
+    if (!rooms.has(code)) {
+      rooms.set(code, []);
+    }
+    const allMessages = rooms.get(code)!;
     const now = Date.now();
     
     if (!roomParticipants.has(code)) {
@@ -33,24 +36,10 @@ async function startServer() {
     }
     const participants = roomParticipants.get(code)!;
 
-    // Sweep stale participants (inactive for more than 20 seconds)
+    // Sweep stale participants (inactive for more than 30 seconds)
     for (const [pUserId, state] of participants.entries()) {
-      if (pUserId !== userId && state.lastSeen > 0 && now - state.lastSeen > 20000) {
-        state.lastSeen = 0; // offline
-        
-        if (!state.leftSent) {
-          state.leftSent = true;
-          state.joinedSent = false; // reset so they can cleanly show join when returning
-          
-          const aliasName = pUserId.substring(2).toUpperCase();
-          allMessages.push({
-            id: `sys_leave_auto_${pUserId}_${now}`,
-            text: `Ref: ${aliasName} has left the study session`,
-            sender: 'system',
-            timestamp: now,
-            isSystem: true
-          });
-        }
+      if (pUserId !== userId && state.lastSeen > 0 && now - state.lastSeen > 30000) {
+        state.lastSeen = 0; // mark offline silently, do not push spam system alerts for auto sweeps
       }
     }
 
@@ -113,7 +102,10 @@ async function startServer() {
   app.post('/api/room/:code/leave', (req, res) => {
     const { code } = req.params;
     const { sender } = req.body;
-    const allMessages = rooms.get(code) || [];
+    if (!rooms.has(code)) {
+      rooms.set(code, []);
+    }
+    const allMessages = rooms.get(code)!;
     const now = Date.now();
 
     if (roomParticipants.has(code)) {
