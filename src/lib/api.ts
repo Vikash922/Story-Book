@@ -1,4 +1,17 @@
 import { useEffect, useState, useRef } from 'react';
+import { db } from './firebase';
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  addDoc, 
+  getDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  limit, 
+  deleteDoc 
+} from 'firebase/firestore';
 
 export interface ChatMessage {
   id: string;
@@ -20,8 +33,6 @@ export function getApiUrl(path: string): string {
   }
   
   const origin = window.location.origin;
-  // If we are running on Cloud Run (contains '.run.app') or local port 3000, we route to local relative path.
-  // Otherwise (Vercel, custom domain, other client hosts), we route to the production Cloud Run deployment.
   const isCloudRun = origin.includes('.run.app');
   const isLocalDev = origin.includes('localhost:3000') || origin.includes('127.0.0.1:3000');
   
@@ -36,166 +47,155 @@ export function useChatRoom(roomCode: string | null, userId?: string, isChatActi
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [participants, setParticipants] = useState<Record<string, ParticipantState>>({});
-  const isPolling = useRef(false);
-  
-  // Track continuous idle polls to back off frequency
-  const idlePollCount = useRef(0);
-  // Keep a ref of messages to read current value in polling interval without state dependencies
-  const messagesRef = useRef<ChatMessage[]>([]);
-  messagesRef.current = messages;
 
+  // Real-time listeners setup
   useEffect(() => {
-    if (!roomCode) {
+    if (!roomCode || !userId) {
       setMessages([]);
       setTypingUsers([]);
       setParticipants({});
       return;
     }
 
-    let timeoutId: NodeJS.Timeout | null = null;
-    let isActive = true;
+    // --- 1. Message listener ---
+    const messagesRef = collection(db, 'rooms', roomCode, 'messages');
+    const qMessages = query(messagesRef, orderBy('timestamp', 'asc'), limit(150));
+    
+    const unsubscribeMessages = onSnapshot(qMessages, (snapshot) => {
+      const msgsList: ChatMessage[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        msgsList.push({
+          id: doc.id,
+          text: data.text || '',
+          sender: data.sender || '',
+          timestamp: data.timestamp || Date.now(),
+          isSystem: !!data.isSystem
+        });
+      });
+      setMessages(msgsList);
+    }, (error) => {
+      console.error("Firestore message channel error:", error);
+    });
 
-    const fetchMessages = async () => {
-      if (!isActive) return;
-      
-      // If page is hidden, pause polling completely to save 100% data
-      if (document.hidden) {
-        // Retry in 5 seconds (gentle background check, or wait until visibilitychange listener fires)
-        scheduleNextPoll(5000);
-        return;
-      }
+    // --- 2. Typing listener ---
+    const typingRef = collection(db, 'rooms', roomCode, 'typing');
+    const unsubscribeTyping = onSnapshot(typingRef, (snapshot) => {
+      const activeTypers: string[] = [];
+      const now = Date.now();
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        // Clear typers active status older than 10 seconds
+        if (doc.id !== userId && data.isTyping && (now - (data.lastActive || 0) < 10000)) {
+          activeTypers.push(doc.id);
+        }
+      });
+      setTypingUsers(activeTypers);
+    });
 
-      if (isPolling.current) return;
-      isPolling.current = true;
-
+    // --- 3. Participants listener & Heartbeat ---
+    const participantsRef = collection(db, 'rooms', roomCode, 'participants');
+    
+    // Heartbeat: update current user's seen status
+    const updateHeartbeat = async () => {
       try {
-        // Find the maximum timestamp in our local messages to do delta-fetching
-        const localMsgs = messagesRef.current;
-        const lastTimestamp = localMsgs.length > 0 
-          ? Math.max(...localMsgs.map(m => m.timestamp)) 
-          : 0;
+        await setDoc(doc(db, 'rooms', roomCode, 'participants', userId), {
+          lastSeen: Date.now(),
+          lastRead: Date.now()
+        }, { merge: true });
+      } catch (err) {
+        console.error("Failed to write presence heartbeat:", err);
+      }
+    };
+    
+    updateHeartbeat();
+    const heartbeatInterval = setInterval(updateHeartbeat, 8000);
 
-        const res = await fetch(getApiUrl(`/api/room/${roomCode}?since=${lastTimestamp}&user=${userId || ''}&active=${isChatActive}`));
-        if (res.ok && isActive) {
-          const data = await res.json();
-          const newMsgs: ChatMessage[] = data.messages || [];
-          const allTypers: string[] = data.typing || [];
-          const partMap: Record<string, ParticipantState> = data.participants || {};
-
-          setParticipants(partMap);
-
-          // Keep typing users other than ourselves
-          const activeTypers = allTypers.filter(uid => uid !== userId);
-          setTypingUsers(activeTypers);
-
-          if (newMsgs.length > 0) {
-            // New messages arrived! Append them and reset idle back-off
-            setMessages(prev => {
-              // Ensure we don't add duplicate IDs
-              const existingIds = new Set(prev.map(m => m.id));
-              const filteredNew = newMsgs.filter(m => !existingIds.has(m.id));
-              if (filteredNew.length === 0) return prev;
-              return [...prev, ...filteredNew];
-            });
-            idlePollCount.current = 0;
-          } else {
-            // No new messages. Increment idle count to slow down requests
-            idlePollCount.current += 1;
-          }
+    const unsubscribeParticipants = onSnapshot(participantsRef, (snapshot) => {
+      const partsMap: Record<string, ParticipantState> = {};
+      const now = Date.now();
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        // Only show participants active within the last 30 seconds
+        if (now - (data.lastSeen || 0) < 30000) {
+          partsMap[doc.id] = {
+            lastSeen: data.lastSeen || 0,
+            lastRead: data.lastRead || 0
+          };
         }
-      } catch (e) {
-        console.error('Failed to fetch messages', e);
-      } finally {
-        isPolling.current = false;
-        if (isActive) {
-          // Adjust interval based on level of activity
-          // 0-4 idle polls: 1.5s
-          // 5-10 idle polls: 3s
-          // 11+ idle polls: 5s 
-          let nextDelay = 1500;
-          if (idlePollCount.current > 10) {
-            nextDelay = 5000;
-          } else if (idlePollCount.current > 4) {
-            nextDelay = 3000;
-          }
-          scheduleNextPoll(nextDelay);
-        }
-      }
-    };
+      });
+      setParticipants(partsMap);
+    });
 
-    const scheduleNextPoll = (delay: number) => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (isActive) {
-        timeoutId = setTimeout(fetchMessages, delay);
-      }
-    };
-
-    // Listen to focus and visibility changes to immediately fetch
-    const handleVisibilityOrFocus = () => {
-      if (!document.hidden) {
-        idlePollCount.current = 0; // reset backoff
-        fetchMessages();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-    window.addEventListener('focus', handleVisibilityOrFocus);
-
-    // Initial fetch
-    fetchMessages();
-
+    // Clean up on unmount or room/user change
     return () => {
-      isActive = false;
-      if (timeoutId) clearTimeout(timeoutId);
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
+      clearInterval(heartbeatInterval);
+      unsubscribeMessages();
+      unsubscribeTyping();
+      unsubscribeParticipants();
+      
+      // Mark offline and clean up typing on leave
+      setDoc(doc(db, 'rooms', roomCode, 'typing', userId), {
+        isTyping: false,
+        lastActive: 0
+      }, { merge: true }).catch(() => {});
+
+      setDoc(doc(db, 'rooms', roomCode, 'participants', userId), {
+        lastSeen: 0,
+        lastRead: 0
+      }, { merge: true }).catch(() => {});
     };
-  }, [roomCode, userId, isChatActive]);
+  }, [roomCode, userId]);
 
   const sendMessage = async (code: string, text: string, sender: string) => {
+    if (!code) return;
     try {
-      const res = await fetch(getApiUrl(`/api/room/${code}/message`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, sender })
+      const messagesRef = collection(db, 'rooms', code, 'messages');
+      await addDoc(messagesRef, {
+        text,
+        sender,
+        timestamp: Date.now(),
+        isSystem: false
       });
-      if (res.ok) {
-        const msg = await res.json();
-        // Reset idle count immediately since active chatting is happening
-        idlePollCount.current = 0;
-        // Optimistically add to local state
-        setMessages(prev => {
-          if (prev.some(m => m.id === msg.id)) return prev;
-          return [...prev, msg];
-        });
-      }
     } catch (e) {
-      console.error('Failed to send message', e);
+      console.error('Failed to send message via Firestore', e);
     }
   };
 
   const sendTypingStatus = async (isTyping: boolean) => {
     if (!roomCode || !userId) return;
     try {
-      await fetch(getApiUrl(`/api/room/${roomCode}/typing`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sender: userId, isTyping })
-      });
+      const typingDoc = doc(db, 'rooms', roomCode, 'typing', userId);
+      await setDoc(typingDoc, {
+        isTyping,
+        lastActive: Date.now()
+      }, { merge: true });
     } catch (e) {
-      // Fail silently to avoid polluting console with connection/aborted requests
+      // Fail silently to prevent console log bloating
     }
   };
 
   const createRoom = async () => {
     try {
-      const res = await fetch(getApiUrl('/api/room'), { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        return data.code;
-      }
+      // Generate unique 6 digit room code
+      const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const roomRef = doc(db, 'rooms', roomCode);
+      await setDoc(roomRef, {
+        createdAt: Date.now()
+      });
+      return roomCode;
     } catch (e) {
-      console.error('Failed to create room', e);
+      console.error('Failed to create Firebase room', e);
+      // Fallback: request from server if API remains available
+      try {
+        const res = await fetch(getApiUrl('/api/room'), { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          return data.code;
+        }
+      } catch (err) {
+        console.error("Fallback server room creation failed:", err);
+      }
     }
     return null;
   };

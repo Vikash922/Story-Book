@@ -35,26 +35,6 @@ export default function DisguisedApp() {
   // Connect to API, passing mode === 'chat' as isActive to enable read status triggers
   const { messages, typingUsers, participants, sendMessage, sendTypingStatus, createRoom } = useChatRoom(roomCode, userId, mode === 'chat');
   
-  // Register beforeunload to instantly trigger leave notification on tab close/unload
-  useEffect(() => {
-    const handleUnload = () => {
-      if (roomCode && userId) {
-        const payload = JSON.stringify({ sender: userId });
-        fetch(getApiUrl(`/api/room/${roomCode}/leave`), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-          keepalive: true
-        }).catch(() => {});
-      }
-    };
-
-    window.addEventListener('beforeunload', handleUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleUnload);
-    };
-  }, [roomCode, userId]);
-
   // Tick calculation logic mimicking WhatsApp
   const getMessageTickStatus = (msg: any) => {
     if (msg.isSystem || msg.sender !== userId) return null;
@@ -279,46 +259,24 @@ export default function DisguisedApp() {
 
   const handleStartChat = async () => {
     await requestShakePermission();
-    setIsConnecting(true);
-    setConnectError(null);
-    try {
-      const code = await createRoom();
-      if (code) {
-        setRoomCode(code);
-        setMode('chat');
-        setShowJoinPrompt(false);
-      } else {
-        setConnectError("Host unreachable. Please check backend API/connectivity.");
-      }
-    } catch (err: any) {
-      console.error(err);
-      setConnectError(err?.message || "Connection timed out.");
-    } finally {
-      setIsConnecting(false);
-    }
+    // Generate a random 6-digit room code instantly on the client
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    setRoomCode(code);
+    setMode('chat');
+    setShowJoinPrompt(false);
+    
+    // Create the room in Firestore/backend silently in the background
+    createRoom().catch(() => {});
   };
 
   const handleJoinChat = async () => {
     if (joinCode.length !== 6) return;
     await requestShakePermission();
-    setIsConnecting(true);
-    setConnectError(null);
-    try {
-      const targetCode = joinCode.toUpperCase();
-      const res = await fetch(getApiUrl(`/api/room/${targetCode}?user=${userId}&active=true`));
-      if (res.ok) {
-        setRoomCode(targetCode);
-        setMode('chat');
-        setShowJoinPrompt(false);
-      } else {
-        setConnectError("Invalid room code or session expired.");
-      }
-    } catch (err: any) {
-      console.error(err);
-      setConnectError("Failed to reach syncing backend.");
-    } finally {
-      setIsConnecting(false);
-    }
+    // Instantly transition to the chat room. Firebase listener will connect and sync messages in the background
+    const targetCode = joinCode.toUpperCase();
+    setRoomCode(targetCode);
+    setMode('chat');
+    setShowJoinPrompt(false);
   };
 
   const copyToClipboard = async () => {
@@ -489,11 +447,10 @@ export default function DisguisedApp() {
                 <div className="space-y-3">
                   <button 
                     onClick={handleStartChat}
-                    disabled={isConnecting}
-                    className={`w-full flex items-center justify-center gap-2 py-2 rounded text-[11px] font-bold tracking-widest transition-opacity ${isConnecting ? 'opacity-60 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-[#EAEAEA] text-[#111111] hover:bg-[#C0C0C0]' : 'bg-[#1A1A1A] text-white hover:bg-[#2C2B26]'}`}
+                    className={`w-full flex items-center justify-center gap-2 py-2 rounded text-[11px] font-bold tracking-widest transition-opacity ${isDarkMode ? 'bg-[#EAEAEA] text-[#111111] hover:bg-[#C0C0C0]' : 'bg-[#1A1A1A] text-white hover:bg-[#2C2B26]'}`}
                   >
-                    <Share size={14} className={isConnecting ? 'animate-spin' : ''} /> 
-                    {isConnecting ? 'CONNECTING...' : 'NEW SESSION'}
+                    <Share size={14} /> 
+                    NEW SESSION
                   </button>
                   <div className="relative">
                     <div className="absolute inset-0 flex items-center">
@@ -507,31 +464,23 @@ export default function DisguisedApp() {
                     <input 
                       type="text" 
                       placeholder="ENTER CODE" 
-                      disabled={isConnecting}
-                      className={`w-full border rounded px-3 py-1.5 text-xs uppercase focus:outline-none ${isConnecting ? 'opacity-60 cursor-not-allowed' : ''} ${isDarkMode ? 'border-[#333333] bg-[#111111] text-[#EAEAEA] focus:border-[#C5B37D]' : 'border-[#D1CEC0] bg-white text-[#1A1A1A] focus:border-[#B59F5B]'}`}
+                      className={`w-full border rounded px-3 py-1.5 text-xs uppercase focus:outline-none ${isDarkMode ? 'border-[#333333] bg-[#111111] text-[#EAEAEA] focus:border-[#C5B37D]' : 'border-[#D1CEC0] bg-white text-[#1A1A1A] focus:border-[#B59F5B]'}`}
                       value={joinCode}
                       onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
                       maxLength={6}
                     />
                     <button 
                       onClick={handleJoinChat}
-                      disabled={isConnecting || joinCode.length !== 6}
-                      className={`border px-3 py-1.5 rounded transition-opacity ${isConnecting || joinCode.length !== 6 ? 'opacity-40 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-[#1A1A1A] border-[#333333] text-[#EAEAEA] hover:bg-[#2C2C2C]' : 'bg-[#F5F2E6] border-[#D1CEC0] text-[#1A1A1A] hover:bg-[#E8E6DD]'}`}
+                      disabled={joinCode.length !== 6}
+                      className={`border px-3 py-1.5 rounded transition-opacity ${joinCode.length !== 6 ? 'opacity-40 cursor-not-allowed' : ''} ${isDarkMode ? 'bg-[#1A1A1A] border-[#333333] text-[#EAEAEA] hover:bg-[#2C2C2C]' : 'bg-[#F5F2E6] border-[#D1CEC0] text-[#1A1A1A] hover:bg-[#E8E6DD]'}`}
                     >
-                      <Link size={14} className={isConnecting ? 'animate-spin' : ''} />
+                      <Link size={14} />
                     </button>
                   </div>
-                  
-                  {connectError && (
-                    <div className="text-[9.5px] uppercase font-mono tracking-wider p-2 border border-red-500/30 text-red-500 bg-red-500/10 rounded-sm leading-normal">
-                      ⚠ {connectError}
-                    </div>
-                  )}
 
                   {roomCode && (
                     <button 
                       onClick={() => setMode('chat')}
-                      disabled={isConnecting}
                       className={`w-full text-center text-[11px] mt-2 font-bold hover:underline ${isDarkMode ? 'text-[#C5B37D]' : 'text-[#B59F5B]'}`}
                     >
                       RESUME ACTIVE SESSION
